@@ -251,9 +251,16 @@ extension SwiftWatchConnectivity: WCSessionDelegate {
         activationState = .inactive
         print("inactivated")
     }
+
+    public func sessionWatchStateDidChange(_ session: WCSession) {
+        invoke()
+        print("state changed")
+    }
     #endif
+
     public func sessionReachabilityDidChange(_ session: WCSession) {
-        //        isReachable = session.isReachable
+        invoke()
+        print("reachability changed")
     }
 
     public func session(_ session: WCSession, didReceiveApplicationContext applicationContext: [String : Any]) {
