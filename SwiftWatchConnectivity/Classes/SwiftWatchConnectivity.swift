@@ -36,6 +36,8 @@ public class SwiftWatchConnectivity: NSObject {
 
     /// MARK: Private Properties
     fileprivate var tasks: [Task] = []
+    fileprivate var latestApplicationContext: [String: Any]? // the latest application context
+
     fileprivate var receivedTasks: [Task] = []
     fileprivate var activationState: WCSessionActivationState = .notActivated
     #if os(watchOS)
@@ -74,10 +76,18 @@ public class SwiftWatchConnectivity: NSObject {
 
     /// MARK: Type Methods
     /// MARK: Public Methods
-    public func updateApplicationContext(context: [String: Any]) {
-        tasks.append(.updateApplicationContext(context))
+
+    /// If onlyLatest is true then task is not added to the queue.
+    /// Useful when only the latest applicationContext matters
+    public func updateApplicationContext(context: [String: Any], onlyLatest: Bool = false) {
+        if onlyLatest {
+            latestApplicationContext = context
+        } else {
+            tasks.append(.updateApplicationContext(context))
+        }
         invoke()
     }
+
     public func transferUserInfo(userInfo: [String: Any]) {
         tasks.append(.transferUserInfo(userInfo))
         invoke()
@@ -107,11 +117,10 @@ public class SwiftWatchConnectivity: NSObject {
         for task in tasks {
             switch task {
             case .updateApplicationContext(let context):
-                guard isAvailableApplicationContext else {
+                guard isAvailableApplicationContext && invokeUpdateApplicationContext(context) else {
                     remainTasks.append(task)
                     continue
                 }
-                invokeUpdateApplicationContext(context)
             case .transferUserInfo(let userInfo):
                 guard isAvailableTransferUserInfo else {
                     remainTasks.append(task)
@@ -138,15 +147,23 @@ public class SwiftWatchConnectivity: NSObject {
                 invokeSendMessageData(data)
             }
         }
+
         tasks.removeAll()
-        remainTasks.forEach({ tasks.append($0) })
+        tasks.append(contentsOf: remainTasks)
+
+        // invoke latest application context
+        if let latestApplicationContext = latestApplicationContext, isAvailableApplicationContext && invokeUpdateApplicationContext(latestApplicationContext) {
+            self.latestApplicationContext = nil
+        }
     }
 
-    private func invokeUpdateApplicationContext(_ context: [String: Any]) {
+    private func invokeUpdateApplicationContext(_ context: [String: Any]) -> Bool {
         do {
             try WCSession.default.updateApplicationContext(context)
+            return true
         } catch {
             print("updateApplicationContext error: \(error)")
+            return false
         }
     }
 
@@ -229,6 +246,7 @@ extension SwiftWatchConnectivity: WCSessionDelegate {
         activationState = .notActivated
         print("deactivated")
     }
+
     public func sessionDidBecomeInactive(_ session: WCSession) {
         activationState = .inactive
         print("inactivated")
