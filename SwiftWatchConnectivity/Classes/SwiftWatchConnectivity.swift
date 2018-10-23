@@ -39,7 +39,15 @@ public class SwiftWatchConnectivity: NSObject {
     fileprivate var latestApplicationContext: [String: Any]? // the latest application context
 
     fileprivate var receivedTasks: [Task] = []
-    fileprivate var activationState: WCSessionActivationState = .notActivated
+
+    public var pairedInstalledDefaultSession: WCSession? {
+        let session = WCSession.default
+        #if os(iOS)
+        guard session.isPaired && session.isWatchAppInstalled else { return nil }
+        #endif
+        return session
+    }
+
     #if os(watchOS)
     fileprivate var backgroundTasks: [WKRefreshBackgroundTask] = []
     #endif
@@ -48,29 +56,30 @@ public class SwiftWatchConnectivity: NSObject {
      check all conditions
      */
     fileprivate var isAvailableMessage: Bool {
-        guard WCSession.default.isReachable else { return false }
-        guard activationState == .activated else { return false }
-        return true
+        return pairedInstalledDefaultSession?.isReachable == true && pairedInstalledDefaultSession?.activationState == .activated
     }
 
     fileprivate var isAvailableApplicationContext: Bool {
-        guard WCSession.default.isReachable else { return false }
-        guard activationState == .activated else { return false }
-        return true
+        return pairedInstalledDefaultSession?.activationState == .activated
     }
 
     fileprivate var isAvailableTransferUserInfo: Bool {
-        guard WCSession.default.isReachable else { return false }
-        guard activationState == .activated else { return false }
-        return true
+        return pairedInstalledDefaultSession?.activationState == .activated
     }
 
     /// MARK: Initializations
     public override init() {
         super.init()
         if WCSession.isSupported() {
-            WCSession.default.delegate = self
-            WCSession.default.activate()
+            let session = WCSession.default
+            session.delegate = self
+
+            #if os(watchOS)
+            session.addObserver(self, forKeyPath: "activationState", options: [], context: nil)
+            session.addObserver(self, forKeyPath: "hasContentPending", options: [], context: nil)
+            #endif
+
+            session.activate()
         }
     }
 
@@ -110,7 +119,7 @@ public class SwiftWatchConnectivity: NSObject {
 
     /// MARK: Private Methods
     private func invoke() {
-        guard activationState == .activated else { return }
+        guard WCSession.default.activationState == .activated else { return }
         guard delegate != nil else { return }
 
         var remainTasks: [Task] = []
@@ -158,6 +167,11 @@ public class SwiftWatchConnectivity: NSObject {
     }
 
     private func invokeUpdateApplicationContext(_ context: [String: Any]) -> Bool {
+        guard WCSession.default.activationState == .activated else {
+            print("updateApplicationContext error: session is not activated")
+            return false
+        }
+
         do {
             try WCSession.default.updateApplicationContext(context)
             return true
@@ -207,29 +221,35 @@ public class SwiftWatchConnectivity: NSObject {
 }
 
 #if os(watchOS)
-    extension SwiftWatchConnectivity {
-        public func handle(_ backgroundTasks: Set<WKRefreshBackgroundTask>) {
-            for task in backgroundTasks {
-                // Use a switch statement to check the task type
-                switch task {
-                case let connectivityTask as WKWatchConnectivityRefreshBackgroundTask:
-                    self.backgroundTasks.append(connectivityTask)
-                default:
-                    break
-                }
-            }
-            completeAllTasksIfReady()
-        }
-
-        public func completeAllTasksIfReady() {
-            let session = WCSession.default
-            // the session's properties only have valid values if the session is activated, so check that first
-            if session.activationState == .activated && !session.hasContentPending {
-                backgroundTasks.forEach { $0.setTaskCompletedWithSnapshot(false) }
-                backgroundTasks.removeAll()
-            }
+extension SwiftWatchConnectivity {
+    override public func observeValue(forKeyPath keyPath: String?, of object: Any?, change: [NSKeyValueChangeKey : Any]?, context: UnsafeMutableRawPointer?) {
+        DispatchQueue.main.async {
+            self.completeAllTasksIfReady()
         }
     }
+
+    public func handle(_ backgroundTasks: Set<WKRefreshBackgroundTask>) {
+        for task in backgroundTasks {
+            // Use a switch statement to check the task type
+            switch task {
+            case let connectivityTask as WKWatchConnectivityRefreshBackgroundTask:
+                self.backgroundTasks.append(connectivityTask)
+            default:
+                break
+            }
+        }
+        completeAllTasksIfReady()
+    }
+
+    public func completeAllTasksIfReady() {
+        let session = WCSession.default
+        // the session's properties only have valid values if the session is activated, so check that first
+        if session.activationState == .activated && !session.hasContentPending {
+            backgroundTasks.forEach { $0.setTaskCompletedWithSnapshot(false) }
+            backgroundTasks.removeAll()
+        }
+    }
+}
 #endif
 
 extension SwiftWatchConnectivity: WCSessionDelegate {
@@ -238,29 +258,29 @@ extension SwiftWatchConnectivity: WCSessionDelegate {
             print(error)
             return
         }
-        print("activationState: \(activationState.rawValue)")
-        self.activationState = activationState
+        print("activationDidCompleteWith activationState: \(activationState.rawValue)")
     }
     #if os(iOS)
     public func sessionDidDeactivate(_ session: WCSession) {
-        activationState = .notActivated
-        print("deactivated")
+        print("sessionDidDeactivate")
+
+        // reactivate to support multiple watches
+        session.activate()
     }
 
     public func sessionDidBecomeInactive(_ session: WCSession) {
-        activationState = .inactive
         print("inactivated")
     }
 
     public func sessionWatchStateDidChange(_ session: WCSession) {
+        print("sessionWatchStateDidChange")
         invoke()
-        print("state changed")
     }
     #endif
 
     public func sessionReachabilityDidChange(_ session: WCSession) {
-        invoke()
         print("reachability changed")
+        invoke()
     }
 
     public func session(_ session: WCSession, didReceiveApplicationContext applicationContext: [String : Any]) {
